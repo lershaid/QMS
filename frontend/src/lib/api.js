@@ -2,10 +2,11 @@ import axios from 'axios'
 import { useAuthStore } from '../store/authStore'
 
 const api = axios.create({
-  baseURL: import.meta.env.VITE_API_GATEWAY_URL || 'http://localhost:3000',
+  baseURL: import.meta.env.VITE_API_GATEWAY_URL || '/api', // Use Vite proxy
   headers: {
     'Content-Type': 'application/json',
   },
+  withCredentials: true, // Enable credentials for CORS
 })
 
 // Request interceptor to add auth token

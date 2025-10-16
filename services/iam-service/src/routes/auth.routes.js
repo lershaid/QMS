@@ -1,12 +1,13 @@
 const express = require('express');
 const authService = require('../services/auth.service');
+const { validate, schemas } = require('../middleware/validation.middleware');
 
 const router = express.Router();
 
 /**
  * Register a new user
  */
-router.post('/register', async (req, res) => {
+router.post('/register', validate(schemas.register), async (req, res) => {
   try {
     const { tenantId, email, password, firstName, lastName } = req.body;
     
@@ -35,7 +36,7 @@ router.post('/register', async (req, res) => {
 /**
  * Login user
  */
-router.post('/login', async (req, res) => {
+router.post('/login', validate(schemas.login), async (req, res) => {
   try {
     const { email, password } = req.body;
     
@@ -82,7 +83,7 @@ router.post('/logout', async (req, res) => {
 /**
  * Refresh access token
  */
-router.post('/refresh', async (req, res) => {
+router.post('/refresh', validate(schemas.refreshToken), async (req, res) => {
   try {
     const { refreshToken } = req.body;
     

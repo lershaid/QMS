@@ -2,76 +2,57 @@ require('dotenv').config();
 const express = require('express');
 const helmet = require('helmet');
 const cors = require('cors');
-const rateLimit = require('express-rate-limit');
-const swaggerUi = require('swagger-ui-express');
-const swaggerJsdoc = require('swagger-jsdoc');
 
 const authRoutes = require('./routes/auth.routes');
-const userRoutes = require('./routes/user.routes');
-const roleRoutes = require('./routes/role.routes');
-const tenantRoutes = require('./routes/tenant.routes');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// CORS must come first
+// Allowed origins for CORS
+const allowedOrigins = [
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+  'http://localhost:3000',  // API Gateway
+  'http://localhost:3001',
+  /^https:\/\/.*\.github\.dev$/,  // GitHub Codespaces
+  /^https:\/\/.*\.githubpreview\.dev$/,  // GitHub Codespaces preview
+];
+
+// CORS configuration
 app.use(cors({
-  origin: true,
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps, curl, Postman)
+    if (!origin) return callback(null, true);
+    
+    // Check if origin matches allowed patterns
+    const isAllowed = allowedOrigins.some(allowed => {
+      if (typeof allowed === 'string') return allowed === origin;
+      if (allowed instanceof RegExp) return allowed.test(origin);
+      return false;
+    });
+    
+    if (isAllowed) {
+      callback(null, true);
+    } else {
+      console.warn(`CORS blocked origin: ${origin}`);
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'x-tenant-id'],
-  optionsSuccessStatus: 204
+  optionsSuccessStatus: 204,
 }));
 
-// Security middleware
-app.use(helmet({
-  crossOriginResourcePolicy: { policy: "cross-origin" }
-}));
+app.options('*', cors());
 
-// Rate limiting
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // limit each IP to 100 requests per windowMs
-  skip: (req) => req.method === 'OPTIONS',
-});
-app.use('/api/', limiter);
+// Security
+app.use(helmet());
 
 // Body parser
 app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
 
-// Swagger documentation
-const swaggerOptions = {
-  definition: {
-    openapi: '3.0.0',
-    info: {
-      title: 'QMS IAM Service API',
-      version: '1.0.0',
-      description: 'Identity and Access Management Service for QMS Platform',
-    },
-    servers: [
-      {
-        url: `http://localhost:${PORT}`,
-        description: 'Development server',
-      },
-    ],
-    components: {
-      securitySchemes: {
-        bearerAuth: {
-          type: 'http',
-          scheme: 'bearer',
-          bearerFormat: 'JWT',
-        },
-      },
-    },
-  },
-  apis: ['./src/routes/*.js'],
-};
-
-const swaggerSpec = swaggerJsdoc(swaggerOptions);
-app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
-
-// Health check endpoint
+// Health check
 app.get('/health', (req, res) => {
   res.status(200).json({
     status: 'healthy',
@@ -80,34 +61,18 @@ app.get('/health', (req, res) => {
   });
 });
 
-// API routes
+// Routes
 app.use('/api/v1/auth', authRoutes);
-app.use('/api/v1/users', userRoutes);
-app.use('/api/v1/roles', roleRoutes);
-app.use('/api/v1/tenants', tenantRoutes);
-
-// Error handling
-
-// 404 handler
-app.use((req, res) => {
-  res.status(404).json({
-    code: 404,
-    message: 'Route not found',
-  });
-});
 
 // Start server
-app.listen(PORT, () => {
-  console.info(`IAM Service listening on port ${PORT}`);
-  console.info(`API Documentation available at http://localhost:${PORT}/api-docs`);
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`IAM Service listening on port ${PORT}`);
 });
 
 // Graceful shutdown
 process.on('SIGTERM', () => {
-  console.info('SIGTERM signal received: closing HTTP server');
-  app.close(() => {
-    console.info('HTTP server closed');
-  });
+  console.log('SIGTERM signal received');
+  process.exit(0);
 });
 
 module.exports = app;

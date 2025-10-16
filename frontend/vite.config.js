@@ -10,6 +10,8 @@ export default defineConfig({
       '/api': {
         target: process.env.VITE_API_GATEWAY_URL || 'http://api-gateway:3000',
         changeOrigin: true,
+        secure: false,
+        rewrite: (path) => path, // Keep the /api prefix
       },
     },
   },

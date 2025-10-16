@@ -9,35 +9,60 @@ const authMiddleware = require('./middleware/auth.middleware');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// CORS must come before other middleware
+// Allowed origins for CORS
+const allowedOrigins = [
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+  'http://localhost:3001',
+  /^https:\/\/.*\.github\.dev$/,  // GitHub Codespaces
+  /^https:\/\/.*\.githubpreview\.dev$/,  // GitHub Codespaces preview
+];
+
+// CORS configuration
 app.use(cors({
-  origin: true, // Allow all origins (for development)
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps, curl, Postman)
+    if (!origin) return callback(null, true);
+    
+    // Check if origin matches allowed patterns
+    const isAllowed = allowedOrigins.some(allowed => {
+      if (typeof allowed === 'string') return allowed === origin;
+      if (allowed instanceof RegExp) return allowed.test(origin);
+      return false;
+    });
+    
+    if (isAllowed) {
+      callback(null, true);
+    } else {
+      console.warn(`CORS blocked origin: ${origin}`);
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'x-tenant-id'],
-  exposedHeaders: ['Content-Length', 'X-Request-Id'],
-  maxAge: 86400, // 24 hours
+  optionsSuccessStatus: 204,
 }));
 
-// Handle OPTIONS requests explicitly
+// Handle OPTIONS requests explicitly before other middleware
 app.options('*', cors());
 
-// Security middleware (after CORS)
+// Security middleware
 app.use(helmet({
   crossOriginResourcePolicy: { policy: "cross-origin" }
 }));
 
-// Body parser
-app.use(express.json());
-
 // Rate limiting
 const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // limit each IP to 100 requests per windowMs
+  windowMs: 15 * 60 * 1000,
+  max: 100,
   message: 'Too many requests from this IP, please try again later.',
-  skip: (req) => req.method === 'OPTIONS', // Skip rate limiting for preflight
 });
 app.use(limiter);
+
+// Body parser with size limits
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Health check
 app.get('/health', (req, res) => {
@@ -65,7 +90,10 @@ const createProxy = (target) => {
   return createProxyMiddleware({
     target,
     changeOrigin: true,
-    logLevel: 'debug',
+    pathRewrite: (path) => {
+      // Keep the full path - don't remove service prefix
+      return path;
+    },
     onError: (err, req, res) => {
       console.error(`Proxy error for ${req.url}:`, err.message);
       res.status(502).json({
@@ -73,8 +101,8 @@ const createProxy = (target) => {
         message: 'Bad Gateway - Service unavailable',
       });
     },
-    onProxyReq: (proxyReq, req, res) => {
-      console.log(`Proxying ${req.method} ${req.url} to ${target}${req.url}`);
+    onProxyReq: (proxyReq, req) => {
+      console.log(`Proxying ${req.method} ${req.url} to ${target}`);
     },
   });
 };
@@ -88,16 +116,10 @@ app.use('/api/v1/roles', authMiddleware, createProxy(services.iam));
 app.use('/api/v1/tenants', authMiddleware, createProxy(services.iam));
 
 app.use('/api/v1/policies', authMiddleware, createProxy(services.policy));
-app.use('/api/v1/versions', authMiddleware, createProxy(services.policy));
-app.use('/api/v1/approvals', authMiddleware, createProxy(services.policy));
-app.use('/api/v1/templates', authMiddleware, createProxy(services.policy));
-
 app.use('/api/v1/documents', authMiddleware, createProxy(services.document));
 app.use('/api/v1/audits', authMiddleware, createProxy(services.audit));
-app.use('/api/v1/nonconformities', authMiddleware, createProxy(services.capa));
-app.use('/api/v1/corrective-actions', authMiddleware, createProxy(services.capa));
+app.use('/api/v1/capa', authMiddleware, createProxy(services.capa));
 app.use('/api/v1/risks', authMiddleware, createProxy(services.risk));
-app.use('/api/v1/objectives', authMiddleware, createProxy(services.risk));
 app.use('/api/v1/analytics', authMiddleware, createProxy(services.analytics));
 app.use('/api/v1/notifications', authMiddleware, createProxy(services.notification));
 
@@ -110,7 +132,7 @@ app.use((req, res) => {
 });
 
 // Start server
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`API Gateway listening on port ${PORT}`);
   console.log(`Proxying to ${Object.keys(services).length} microservices`);
 });

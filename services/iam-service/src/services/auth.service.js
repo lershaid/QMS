@@ -4,14 +4,25 @@ const { PrismaClient } = require('@prisma/client');
 
 const prisma = new PrismaClient();
 
+// Validate JWT secrets on startup
+if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32) {
+  throw new Error('JWT_SECRET must be set and at least 32 characters long');
+}
+
+const JWT_SECRET = process.env.JWT_SECRET;
+const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || process.env.JWT_SECRET;
+
 /**
  * Register a new user
  */
 const register = async (tenantId, email, password, firstName, lastName) => {
-  // Check if user already exists
+  // Check if user already exists (using compound unique constraint)
   const existingUser = await prisma.user.findUnique({
     where: {
-      email: email,
+      tenantId_email: {
+        tenantId,
+        email,
+      },
     },
   });
 
@@ -22,14 +33,14 @@ const register = async (tenantId, email, password, firstName, lastName) => {
   }
 
   // Hash password
-  const passwordHash = await bcrypt.hash(password, 10);
+  const hashedPassword = await bcrypt.hash(password, 10);
 
   // Create user
   const user = await prisma.user.create({
     data: {
       tenantId,
       email,
-      passwordHash,
+      passwordHash: hashedPassword,
       firstName,
       lastName,
     },
@@ -37,41 +48,33 @@ const register = async (tenantId, email, password, firstName, lastName) => {
 
   // Remove password from response
   const { passwordHash: _, ...userWithoutPassword } = user;
-
   return userWithoutPassword;
 };
 
 /**
- * Login user and generate tokens
+ * Login user
  */
-const login = async (email, password, ipAddress, userAgent) => {
-  // Find user
+const login = async (email, password) => {
+  // Find user by email (note: email alone is not unique, but we search all tenants)
   const user = await prisma.user.findFirst({
     where: {
       email,
-      isActive: true,
     },
     include: {
       tenant: true,
-      userRoles: {
-        include: {
-          role: {
-            include: {
-              permissions: {
-                include: {
-                  permission: true,
-                },
-              },
-            },
-          },
-        },
-      },
     },
   });
 
   if (!user) {
     const error = new Error('Invalid credentials');
     error.statusCode = 401;
+    throw error;
+  }
+
+  // Check if user is active
+  if (!user.isActive) {
+    const error = new Error('User account is inactive');
+    error.statusCode = 403;
     throw error;
   }
 
@@ -82,7 +85,7 @@ const login = async (email, password, ipAddress, userAgent) => {
     throw error;
   }
 
-  // Verify password
+  // Verify password (schema field is 'passwordHash')
   const isPasswordValid = await bcrypt.compare(password, user.passwordHash);
   if (!isPasswordValid) {
     const error = new Error('Invalid credentials');
@@ -90,29 +93,19 @@ const login = async (email, password, ipAddress, userAgent) => {
     throw error;
   }
 
-  // Extract permissions
-  const permissions = user.userRoles.flatMap((ur) =>
-    ur.role.permissions.map((rp) => ({
-      resource: rp.permission.resource,
-      action: rp.permission.action,
-    }))
-  );
-
   // Generate JWT tokens
-  const accessToken = generateAccessToken(user, permissions);
+  const accessToken = generateAccessToken(user);
   const refreshToken = generateRefreshToken(user);
 
   // Create session
   const expiresAt = new Date();
-  expiresAt.setHours(expiresAt.getHours() + 24); // 24 hours
+  expiresAt.setHours(expiresAt.getHours() + 1);
 
-  const session = await prisma.session.create({
+  await prisma.session.create({
     data: {
       userId: user.id,
       token: accessToken,
       refreshToken,
-      ipAddress,
-      userAgent,
       expiresAt,
     },
   });
@@ -120,28 +113,16 @@ const login = async (email, password, ipAddress, userAgent) => {
   // Update last login
   await prisma.user.update({
     where: { id: user.id },
-    data: { lastLogin: new Date() },
-  });
-
-  // Log audit
-  await prisma.auditLog.create({
-    data: {
-      userId: user.id,
-      action: 'LOGIN',
-      resource: 'auth',
-      ipAddress,
-      userAgent,
-    },
+    data: { lastLoginAt: new Date() },
   });
 
   // Remove sensitive data
-  const { password: _, ...userWithoutPassword } = user;
+  const { passwordHash: _, ...userWithoutPassword } = user;
 
   return {
     user: userWithoutPassword,
     accessToken,
     refreshToken,
-    expiresIn: '24h',
   };
 };
 
@@ -149,7 +130,7 @@ const login = async (email, password, ipAddress, userAgent) => {
  * Logout user
  */
 const logout = async (token) => {
-  await prisma.session.delete({
+  await prisma.session.deleteMany({
     where: { token },
   });
 };
@@ -158,73 +139,54 @@ const logout = async (token) => {
  * Refresh access token
  */
 const refreshAccessToken = async (refreshToken) => {
-  // Find session
-  const session = await prisma.session.findUnique({
-    where: { refreshToken },
-    include: {
-      user: {
-        include: {
-          userRoles: {
-            include: {
-              role: {
-                include: {
-                  permissions: {
-                    include: {
-                      permission: true,
-                    },
-                  },
-                },
-              },
-            },
-          },
-        },
+  try {
+    const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET || process.env.JWT_SECRET);
+    
+    const session = await prisma.session.findFirst({
+      where: {
+        refreshToken,
+        userId: decoded.userId,
       },
-    },
-  });
+      include: {
+        user: true,
+      },
+    });
 
-  if (!session) {
-    const error = new Error('Invalid refresh token'); error.statusCode = 401; throw error;
+    if (!session) {
+      const error = new Error('Invalid refresh token');
+      error.statusCode = 401;
+      throw error;
+    }
+
+    // Generate new access token
+    const accessToken = generateAccessToken(session.user);
+
+    // Update session
+    await prisma.session.update({
+      where: { id: session.id },
+      data: { token: accessToken },
+    });
+
+    return { accessToken };
+  } catch (err) {
+    const error = new Error('Invalid refresh token');
+    error.statusCode = 401;
+    throw error;
   }
-
-  // Check if session expired
-  if (new Date() > session.expiresAt) {
-    await prisma.session.delete({ where: { id: session.id } });
-    const error = new Error('Session expired'); error.statusCode = 401; throw error;
-  }
-
-  // Extract permissions
-  const permissions = session.user.userRoles.flatMap((ur) =>
-    ur.role.permissions.map((rp) => ({
-      resource: rp.permission.resource,
-      action: rp.permission.action,
-    }))
-  );
-
-  // Generate new access token
-  const accessToken = generateAccessToken(session.user, permissions);
-
-  // Update session
-  await prisma.session.update({
-    where: { id: session.id },
-    data: { token: accessToken },
-  });
-
-  return { accessToken };
 };
 
 /**
- * Generate access token (JWT)
+ * Generate access token
  */
-const generateAccessToken = (user, permissions) => {
+const generateAccessToken = (user) => {
   return jwt.sign(
     {
       userId: user.id,
-      tenantId: user.tenantId,
       email: user.email,
-      permissions,
+      tenantId: user.tenantId,
     },
-    process.env.JWT_SECRET,
-    { expiresIn: process.env.JWT_EXPIRY || '24h' }
+    JWT_SECRET,
+    { expiresIn: process.env.JWT_EXPIRY || '1h' }
   );
 };
 
@@ -235,10 +197,9 @@ const generateRefreshToken = (user) => {
   return jwt.sign(
     {
       userId: user.id,
-      type: 'refresh',
     },
-    process.env.JWT_SECRET,
-    { expiresIn: '7d' }
+    JWT_REFRESH_SECRET,
+    { expiresIn: process.env.JWT_REFRESH_EXPIRY || '7d' }
   );
 };
 
@@ -247,11 +208,11 @@ const generateRefreshToken = (user) => {
  */
 const verifyToken = (token) => {
   try {
-    return jwt.verify(token, process.env.JWT_SECRET);
-  } catch (err) {
-    const error = new Error('Invalid or expired token');
-    error.statusCode = 401;
-    throw error;
+    return jwt.verify(token, JWT_SECRET);
+  } catch (error) {
+    const err = new Error('Invalid or expired token');
+    err.statusCode = 401;
+    throw err;
   }
 };
 
