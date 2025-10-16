@@ -1,0 +1,323 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: qms-postgres
+    environment:
+      POSTGRES_USER: qms_admin
+      POSTGRES_PASSWORD: qms_secure_password
+      POSTGRES_DB: qms_platform
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/init:/docker-entrypoint-initdb.d
+    networks:
+      - qms-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U qms_admin"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # MinIO Object Storage (S3-compatible)
+  minio:
+    image: minio/minio:latest
+    container_name: qms-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: qms_minio_admin
+      MINIO_ROOT_PASSWORD: qms_minio_secure_password
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    networks:
+      - qms-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # RabbitMQ Message Broker
+  rabbitmq:
+    image: rabbitmq:3.12-management-alpine
+    container_name: qms-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: qms_rabbit
+      RABBITMQ_DEFAULT_PASS: qms_rabbit_password
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - qms-network
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: qms-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - qms-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # API Gateway
+  api-gateway:
+    build:
+      context: ./services/api-gateway
+      dockerfile: Dockerfile
+    container_name: qms-api-gateway
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: development
+      PORT: 3000
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      - redis
+      - rabbitmq
+    networks:
+      - qms-network
+    volumes:
+      - ./services/api-gateway:/app
+      - /app/node_modules
+
+  # IAM Service
+  iam-service:
+    build:
+      context: ./services/iam-service
+      dockerfile: Dockerfile
+    container_name: qms-iam-service
+    ports:
+      - "3001:3001"
+    environment:
+      NODE_ENV: development
+      PORT: 3001
+      DATABASE_URL: postgresql://qms_admin:qms_secure_password@postgres:5432/qms_iam
+      REDIS_URL: redis://redis:6379
+      RABBITMQ_URL: amqp://qms_rabbit:qms_rabbit_password@rabbitmq:5672
+      JWT_SECRET: qms_jwt_super_secret_key_change_in_production
+      JWT_EXPIRY: 24h
+    depends_on:
+      - postgres
+      - redis
+      - rabbitmq
+    networks:
+      - qms-network
+    volumes:
+      - ./services/iam-service:/app
+      - /app/node_modules
+
+  # Policy Lifecycle Service
+  policy-service:
+    build:
+      context: ./services/policy-service
+      dockerfile: Dockerfile
+    container_name: qms-policy-service
+    ports:
+      - "3002:3002"
+    environment:
+      NODE_ENV: development
+      PORT: 3002
+      DATABASE_URL: postgresql://qms_admin:qms_secure_password@postgres:5432/qms_policy
+      RABBITMQ_URL: amqp://qms_rabbit:qms_rabbit_password@rabbitmq:5672
+      MINIO_ENDPOINT: minio
+      MINIO_PORT: 9000
+      MINIO_ACCESS_KEY: qms_minio_admin
+      MINIO_SECRET_KEY: qms_minio_secure_password
+    depends_on:
+      - postgres
+      - rabbitmq
+      - minio
+    networks:
+      - qms-network
+    volumes:
+      - ./services/policy-service:/app
+      - /app/node_modules
+
+  # Document Information Service
+  document-service:
+    build:
+      context: ./services/document-service
+      dockerfile: Dockerfile
+    container_name: qms-document-service
+    ports:
+      - "3003:3003"
+    environment:
+      NODE_ENV: development
+      PORT: 3003
+      DATABASE_URL: postgresql://qms_admin:qms_secure_password@postgres:5432/qms_documents
+      RABBITMQ_URL: amqp://qms_rabbit:qms_rabbit_password@rabbitmq:5672
+      MINIO_ENDPOINT: minio
+      MINIO_PORT: 9000
+      MINIO_ACCESS_KEY: qms_minio_admin
+      MINIO_SECRET_KEY: qms_minio_secure_password
+    depends_on:
+      - postgres
+      - rabbitmq
+      - minio
+    networks:
+      - qms-network
+    volumes:
+      - ./services/document-service:/app
+      - /app/node_modules
+
+  # Audit & Inspection Service
+  audit-service:
+    build:
+      context: ./services/audit-service
+      dockerfile: Dockerfile
+    container_name: qms-audit-service
+    ports:
+      - "3004:3004"
+    environment:
+      NODE_ENV: development
+      PORT: 3004
+      DATABASE_URL: postgresql://qms_admin:qms_secure_password@postgres:5432/qms_audit
+      RABBITMQ_URL: amqp://qms_rabbit:qms_rabbit_password@rabbitmq:5672
+    depends_on:
+      - postgres
+      - rabbitmq
+    networks:
+      - qms-network
+    volumes:
+      - ./services/audit-service:/app
+      - /app/node_modules
+
+  # CAPA & Improvement Service
+  capa-service:
+    build:
+      context: ./services/capa-service
+      dockerfile: Dockerfile
+    container_name: qms-capa-service
+    ports:
+      - "3005:3005"
+    environment:
+      NODE_ENV: development
+      PORT: 3005
+      DATABASE_URL: postgresql://qms_admin:qms_secure_password@postgres:5432/qms_capa
+      RABBITMQ_URL: amqp://qms_rabbit:qms_rabbit_password@rabbitmq:5672
+    depends_on:
+      - postgres
+      - rabbitmq
+    networks:
+      - qms-network
+    volumes:
+      - ./services/capa-service:/app
+      - /app/node_modules
+
+  # Risk & Opportunity Service
+  risk-service:
+    build:
+      context: ./services/risk-service
+      dockerfile: Dockerfile
+    container_name: qms-risk-service
+    ports:
+      - "3006:3006"
+    environment:
+      NODE_ENV: development
+      PORT: 3006
+      DATABASE_URL: postgresql://qms_admin:qms_secure_password@postgres:5432/qms_risk
+      RABBITMQ_URL: amqp://qms_rabbit:qms_rabbit_password@rabbitmq:5672
+    depends_on:
+      - postgres
+      - rabbitmq
+    networks:
+      - qms-network
+    volumes:
+      - ./services/risk-service:/app
+      - /app/node_modules
+
+  # Analytics & Reporting Service
+  analytics-service:
+    build:
+      context: ./services/analytics-service
+      dockerfile: Dockerfile
+    container_name: qms-analytics-service
+    ports:
+      - "3007:3007"
+    environment:
+      NODE_ENV: development
+      PORT: 3007
+      DATABASE_URL: postgresql://qms_admin:qms_secure_password@postgres:5432/qms_analytics
+      RABBITMQ_URL: amqp://qms_rabbit:qms_rabbit_password@rabbitmq:5672
+    depends_on:
+      - postgres
+      - rabbitmq
+    networks:
+      - qms-network
+    volumes:
+      - ./services/analytics-service:/app
+      - /app/node_modules
+
+  # Notification Service
+  notification-service:
+    build:
+      context: ./services/notification-service
+      dockerfile: Dockerfile
+    container_name: qms-notification-service
+    ports:
+      - "3008:3008"
+    environment:
+      NODE_ENV: development
+      PORT: 3008
+      DATABASE_URL: postgresql://qms_admin:qms_secure_password@postgres:5432/qms_notifications
+      RABBITMQ_URL: amqp://qms_rabbit:qms_rabbit_password@rabbitmq:5672
+      SMTP_HOST: smtp.example.com
+      SMTP_PORT: 587
+      SMTP_USER: notifications@qms.example.com
+      SMTP_PASS: smtp_password
+    depends_on:
+      - postgres
+      - rabbitmq
+    networks:
+      - qms-network
+    volumes:
+      - ./services/notification-service:/app
+      - /app/node_modules
+
+  # Frontend Application
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: qms-frontend
+    ports:
+      - "5173:5173"
+    environment:
+      VITE_API_GATEWAY_URL: http://localhost:3000
+    depends_on:
+      - api-gateway
+    networks:
+      - qms-network
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+
+networks:
+  qms-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  minio_data:
+  rabbitmq_data:
+  redis_data:

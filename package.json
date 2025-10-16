@@ -1,0 +1,45 @@
+{
+  "name": "qms-compliance-operating-system",
+  "version": "1.0.0",
+  "description": "Cloud-native Integrated Management System (IMS) Platform - A comprehensive Compliance Operating System",
+  "private": true,
+  "workspaces": [
+    "services/*",
+    "frontend",
+    "shared/*"
+  ],
+  "scripts": {
+    "dev": "docker-compose up",
+    "dev:build": "docker-compose up --build",
+    "down": "docker-compose down",
+    "down:clean": "docker-compose down -v",
+    "logs": "docker-compose logs -f",
+    "db:migrate": "npm run db:migrate --workspaces",
+    "db:seed": "npm run db:seed --workspaces",
+    "test": "npm run test --workspaces",
+    "lint": "npm run lint --workspaces",
+    "format": "prettier --write \"**/*.{js,jsx,ts,tsx,json,md}\""
+  },
+  "devDependencies": {
+    "prettier": "^3.1.0",
+    "eslint": "^8.55.0"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "npm": ">=10.0.0"
+  },
+  "keywords": [
+    "qms",
+    "ims",
+    "compliance",
+    "iso-9001",
+    "iso-14001",
+    "iso-45001",
+    "iso-27001",
+    "quality-management",
+    "microservices",
+    "cloud-native"
+  ],
+  "author": "QMS Development Team",
+  "license": "PROPRIETARY"
+}

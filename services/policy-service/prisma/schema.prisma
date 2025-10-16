@@ -1,0 +1,181 @@
+// Prisma schema for Policy Lifecycle Service
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Policy metadata
+model Policy {
+  id                String          @id @default(uuid())
+  tenantId          String
+  title             String
+  slug              String
+  ownerId           String
+  scope             String?
+  applicableStandards String[]      // e.g., ["ISO9001", "ISO14001"]
+  applicableClauses String[]        // e.g., ["5.2", "7.5"]
+  reviewDate        DateTime?
+  status            PolicyStatus    @default(DRAFT)
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+  
+  versions          PolicyVersion[]
+  disseminations    PolicyDissemination[]
+  
+  @@unique([tenantId, slug])
+  @@index([tenantId])
+  @@index([ownerId])
+  @@map("policies")
+}
+
+enum PolicyStatus {
+  DRAFT
+  IN_REVIEW
+  APPROVED
+  PUBLISHED
+  ARCHIVED
+}
+
+// Policy versions for version control
+model PolicyVersion {
+  id              String        @id @default(uuid())
+  policyId        String
+  versionNumber   Int
+  content         String        @db.Text // Markdown content
+  changeReason    String?
+  status          VersionStatus @default(DRAFT)
+  createdBy       String
+  createdAt       DateTime      @default(now())
+  approvedAt      DateTime?
+  publishedAt     DateTime?
+  
+  policy          Policy              @relation(fields: [policyId], references: [id], onDelete: Cascade)
+  approvalTasks   ApprovalTask[]
+  attestations    PolicyAttestation[]
+  
+  @@unique([policyId, versionNumber])
+  @@index([policyId])
+  @@map("policy_versions")
+}
+
+enum VersionStatus {
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
+  REJECTED
+  PUBLISHED
+}
+
+// Approval workflows
+model ApprovalWorkflow {
+  id          String            @id @default(uuid())
+  tenantId    String
+  name        String
+  description String?
+  isActive    Boolean           @default(true)
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+  
+  stages      ApprovalStage[]
+  
+  @@index([tenantId])
+  @@map("approval_workflows")
+}
+
+// Approval workflow stages
+model ApprovalStage {
+  id          String            @id @default(uuid())
+  workflowId  String
+  name        String
+  order       Int
+  approvers   String[]          // Array of user IDs
+  isParallel  Boolean           @default(false) // If true, all approvers must approve
+  createdAt   DateTime          @default(now())
+  
+  workflow    ApprovalWorkflow  @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  
+  @@index([workflowId])
+  @@map("approval_stages")
+}
+
+// Individual approval tasks
+model ApprovalTask {
+  id              String            @id @default(uuid())
+  versionId       String
+  approverId      String
+  stageName       String
+  status          ApprovalStatus    @default(PENDING)
+  decision        String?           // APPROVED or REJECTED
+  comments        String?
+  signature       String?           // E-signature data
+  decidedAt       DateTime?
+  createdAt       DateTime          @default(now())
+  
+  version         PolicyVersion     @relation(fields: [versionId], references: [id], onDelete: Cascade)
+  
+  @@index([versionId])
+  @@index([approverId])
+  @@map("approval_tasks")
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+// Policy dissemination and attestation
+model PolicyDissemination {
+  id              String            @id @default(uuid())
+  policyId        String
+  targetAudience  String[]          // Array of user IDs or group IDs
+  isRequired      Boolean           @default(true)
+  dueDate         DateTime?
+  createdAt       DateTime          @default(now())
+  
+  policy          Policy                @relation(fields: [policyId], references: [id], onDelete: Cascade)
+  attestations    PolicyAttestation[]
+  
+  @@index([policyId])
+  @@map("policy_disseminations")
+}
+
+// User attestations (acknowledgments)
+model PolicyAttestation {
+  id                String              @id @default(uuid())
+  disseminationId   String
+  versionId         String
+  userId            String
+  signature         String              // E-signature data
+  attestedAt        DateTime            @default(now())
+  ipAddress         String?
+  userAgent         String?
+  
+  dissemination     PolicyDissemination @relation(fields: [disseminationId], references: [id], onDelete: Cascade)
+  version           PolicyVersion       @relation(fields: [versionId], references: [id], onDelete: Cascade)
+  
+  @@unique([disseminationId, userId])
+  @@index([userId])
+  @@map("policy_attestations")
+}
+
+// Policy templates
+model PolicyTemplate {
+  id          String   @id @default(uuid())
+  tenantId    String?  // null for system templates
+  name        String
+  description String?
+  content     String   @db.Text // Markdown template
+  category    String   // e.g., "Quality", "Safety", "Environment"
+  isSystem    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  @@index([tenantId])
+  @@index([category])
+  @@map("policy_templates")
+}

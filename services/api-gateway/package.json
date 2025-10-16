@@ -1,0 +1,24 @@
+{
+  "name": "@qms/api-gateway",
+  "version": "1.0.0",
+  "description": "Central API Gateway for QMS Platform",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js"
+  },
+  "dependencies": {
+    "@qms/common": "file:../../shared/common",
+    "express": "^4.18.2",
+    "helmet": "^7.1.0",
+    "cors": "^2.8.5",
+    "http-proxy-middleware": "^2.0.6",
+    "express-rate-limit": "^7.1.5",
+    "redis": "^4.6.11",
+    "axios": "^1.6.2",
+    "dotenv": "^16.3.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  }
+}
